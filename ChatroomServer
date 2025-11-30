@@ -11,12 +11,16 @@
 #define PROTOPORT 5193
 #define PEND_CONNECTIONS 10
 #define BUFFER_SIZE 1024
+#define MAX_ROOMS 20
+#define MAX_CLIENTS_PER_ROOM 10
+
 
 //struct for threads
 struct threadargs_t {
-  int socket;
+	int socket;
 	int thread_id;
 };
+
 
 //struct for join requests
 struct join_t {
@@ -24,11 +28,146 @@ struct join_t {
 	char username[64];
 };
 
+
+//struct for chatrooms
+struct chatroom_t {
+	char name[64];
+	int port;
+	int csockets[MAX_CLIENTS_PER_ROOM];
+	int client_count;
+	pthread_mutex_t lock;
+};
+
+
+
+//definitions for chat rooms
+struct chatroom_t rooms[MAX_ROOMS];
+int room_count = 0;
+int next_port = 9000;	//new chat room port
+pthread_mutex_t rooms_lock = PTHREAD_MUTEX_INITIALIZER;
+
+//function to find chat room
+//creates room if it doesn't already exist
+struct chatroom_t* getRoom(const char* roomname) {
+	pthread_mutex_lock(&rooms_lock);
+
+	//searches for existing room using input room name
+	for (int i = 0; i < room_count; i++) {
+		if (strcmp(rooms[i].name, roomname) == 0) {
+			pthread_mutex_unlock(&rooms_lock);
+			printf("SERVER: Room %s found.\n", rooms[i].name);
+			return &rooms[i];
+		}
+	}
+
+	//checks if new room can be created
+	if (room_count >= MAX_ROOMS) {
+		pthread_mutex_unlock(&rooms_lock);
+		return NULL;
+	}
+	
+	//creates new room with new port
+	struct chatroom_t* new_room = &rooms[room_count];
+	strncpy(new_room->name, roomname, sizeof(new_room->name) - 1);
+	new_room->port = next_port++;
+	new_room->client_count = 0;
+	pthread_mutex_init(&new_room->lock, NULL);
+	room_count++;
+
+	//displays new room
+	printf("SERVER: Created new room %s.\n", roomname);
+
+	pthread_mutex_unlock(&rooms_lock);
+	return new_room;
+}
+
+
+//adds client to room
+//returns 0 for successful join, -1 for full room
+int addClient(struct chatroom_t *room, int client_socket) {
+	pthread_mutex_lock(&room->lock);
+
+	//checks if room has space for client
+	if (room->client_count >= MAX_CLIENTS_PER_ROOM) {
+		pthread_mutex_unlock(&room->lock);
+		return -1;
+	}
+
+	room->csockets[room->client_count++] = client_socket;
+	printf("SERVER: Client added to room %s (%d/%d)\n", room->name, room->client_count, MAX_CLIENTS_PER_ROOM);
+
+	pthread_mutex_unlock(&room->lock);
+	return 0;
+}
+
+
+
+//worker thread
+void* worker(void *arg) {
+	struct threadargs_t* args = (struct threadargs_t *)arg;
+	int csocket = args->socket; //client socket
+	struct join_t join_req;
+
+	printf("SERVER: Worker thread handling client socket...\n");
+
+	//receives join request
+	int num_bytes = recv(csocket, &join_req, sizeof(join_req), 0);
+
+	if (num_bytes <= 0) {
+		printf("SERVER: Join failed.\n");
+		close(csocket);
+		free(args);
+		pthread_exit(0);
+	}
+
+	//displays join request
+	printf("SERVER: Request from user %s to join room %s\n", join_req.username, join_req.roomname);
+
+	//invokes function to find or create room from input name
+	struct chatroom_t* room = getRoom(join_req.roomname);
+
+	//if room wasn't created, max number of rooms reached
+	if (room == NULL) {
+		char *msg = "SERVER: Unable to create room - max number of rooms reached.\n";
+		printf("%s", msg);
+		//notifies client
+		send(csocket, msg, strlen(msg), 0);
+		close(csocket);
+		free(args);
+		pthread_exit(0);
+	}
+
+	//invokes function to add client to room
+	int is_full = addClient(room, csocket);
+
+	//if returned value is negative, room is full
+	if (is_full < 0) {
+		char *msg = "SERVER: Room is full.\n";
+		printf("SERVER: Room %s is full.\n", room->name);
+		//notifies client
+		send(csocket, msg, strlen(msg), 0);
+		close(csocket);
+		free(args);
+		pthread_exit(0);
+	}
+
+	//sends confirmation to client
+	char *msg = "SERVER: Joined room successfully.\n";
+	send(csocket, msg, strlen(msg), 0);
+
+	//closes client socket
+	close(csocket);
+	free(args);
+	pthread_exit(0);
+}
+
+
+
 int main(void) {
-	int server_s, client_s, i = 0;		 //server and client sockets, iterative variable i
-	struct sockaddr_in saddr, caddr;	 //socket addresses
-	socklen_t addrlen = sizeof(caddr); //socket address length
-	pthread_t threads[200];				     //array for threads
+	int server_s, client_s, i = 0;		//server and client sockets, iterative variable i
+	struct sockaddr_in saddr, caddr;	//socket addresses
+	socklen_t addrlen = sizeof(caddr);	//socket address length
+	pthread_t threads[200];				//array for threads
 
 	//creates socket
 	server_s = socket(AF_INET, SOCK_STREAM, 0);
@@ -60,7 +199,7 @@ int main(void) {
 	}
 
 	//displays server initial message
-	printf("SERVER: Listening on JOIN port...\n");
+	printf("SERVER: Listening on join port...\n");
 
 	//main loop
 	while (1) {
@@ -75,11 +214,26 @@ int main(void) {
 		//displays connection message
 		printf("SERVER: Client connected from %s:%d\n", inet_ntoa(caddr.sin_addr), ntohs(caddr.sin_port));
 
+		//allocates memory for threads
+		struct threadargs_t* args = malloc(sizeof(struct threadargs_t));
+		args->socket = client_s;
+		args->thread_id = i;
+
+		//creates worker thread
+		if (pthread_create(&threads[i], NULL, worker, args) != 0) {
+			perror("SERVER: Thread creation failed.\n");
+			free(args);
+			close(client_s);
+			continue;
+		}
+
+		pthread_detach(threads[i]);
+		i++;
+
 	}
 
 	//closes server socket
 	close(server_s);
 	return 0;
 }
-
 
