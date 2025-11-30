@@ -1,1 +1,85 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <pthread.h>
+
+#define PROTOPORT 5193
+#define PEND_CONNECTIONS 10
+#define BUFFER_SIZE 1024
+
+//struct for threads
+struct threadargs_t {
+  int socket;
+	int thread_id;
+};
+
+//struct for join requests
+struct join_t {
+	char roomname[64];
+	char username[64];
+};
+
+int main(void) {
+	int server_s, client_s, i = 0;		 //server and client sockets, iterative variable i
+	struct sockaddr_in saddr, caddr;	 //socket addresses
+	socklen_t addrlen = sizeof(caddr); //socket address length
+	pthread_t threads[200];				     //array for threads
+
+	//creates socket
+	server_s = socket(AF_INET, SOCK_STREAM, 0);
+
+	if (server_s < 0) {
+		perror("SERVER: Socket creation failed.\n");
+		exit(1);
+	}
+
+	//allows socket to be reused
+	int opt = 1;
+	setsockopt(server_s, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+	memset(&saddr, 0, sizeof(saddr));
+	saddr.sin_family = AF_INET;
+	saddr.sin_addr.s_addr = INADDR_ANY;
+	saddr.sin_port = htons(PROTOPORT);
+
+	//binds socket
+	if (bind(server_s, (struct sockaddr*)&saddr, sizeof(saddr)) < 0) {
+		perror("SERVER: Bind failed.\n");
+		exit(1);
+	}
+
+	//listens on join socket
+	if (listen(server_s, PEND_CONNECTIONS) < 0) {
+		perror("SERVER: Listen failed.\n");
+		exit(1);
+	}
+
+	//displays server initial message
+	printf("SERVER: Listening on JOIN port...\n");
+
+	//main loop
+	while (1) {
+		//accepts join requests
+		client_s = accept(server_s, (struct sockaddr*)&caddr, &addrlen);
+
+		if (client_s < 0) {
+			perror("SERVER: Accept failed.\n");
+			continue;
+		}
+
+		//displays connection message
+		printf("SERVER: Client connected from %s:%d\n", inet_ntoa(caddr.sin_addr), ntohs(caddr.sin_port));
+
+	}
+
+	//closes server socket
+	close(server_s);
+	return 0;
+}
+
 
