@@ -19,18 +19,18 @@ struct join_t {
 int main(int argc, char *argv[]) {
 	int client_s; //client socket
 	struct sockaddr_in saddr;
-	struct join_t join;
+	struct join_t join_req;
 	char sip[16] = "127.0.0.1"; //ip for testing
 
 	//sets user input username
-	printf("Enter username: ");
-	fgets(join.username, sizeof(join.username), stdin);
-	join.username[strcspn(join.username, "\n")] = 0;
+	printf("CLIENT: Enter username: ");
+	fgets(join_req.username, sizeof(join_req.username), stdin);
+	join_req.username[strcspn(join_req.username, "\n")] = 0;
 
 	//takes user input chat room name
-	printf("Enter room name: ");
-	fgets(join.room_name, sizeof(join.room_name), stdin);
-	join.room_name[strcspn(join.room_name, "\n")] = 0;
+	printf("CLIENT: Enter room name: ");
+	fgets(join_req.room_name, sizeof(join_req.room_name), stdin);
+	join_req.room_name[strcspn(join_req.room_name, "\n")] = 0;
 	
 	//creates client socket
 	client_s = socket(AF_INET, SOCK_STREAM, 0);
@@ -58,15 +58,22 @@ int main(int argc, char *argv[]) {
 	printf("CLIENT: Connected to server.\n");
 
 	//sends join request to server
-	if (send(client_s, &join, sizeof(join), 0) < 0) {
+	if (send(client_s, &join_req, sizeof(join_req), 0) < 0) {
 		perror("CLIENT: Send failed.\n");
 		exit(1);
 	}
 
-	printf("CLIENT: Join request sent for room: %s.\n", join.room_name);
+	printf("CLIENT: Join request sent for room %s.\n", join_req.room_name);
+
+	//receives join status from server
+	char buffer[BUFFER_SIZE];
+	int num_recv = recv(client_s, buffer, sizeof(buffer) - 1, 0);
+	if(num_recv > 0) {
+		buffer[num_recv] = '\0';
+		printf("%s", buffer);
+	}
 
 	//closes client socket
 	close(client_s);
 	return 0;
 }
-
