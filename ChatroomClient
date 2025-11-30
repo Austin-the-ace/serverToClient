@@ -9,11 +9,13 @@
 
 #define PROTOPORT 5193
 #define BUFFER_SIZE 1024
+#define MAX_NAME_SIZE 64
+
 
 //struct for join requests
 struct join_t {
-	char room_name[64];
-	char username[64];
+	char room_name[MAX_NAME_SIZE];
+	char username[MAX_NAME_SIZE];
 };
 
 int main(int argc, char *argv[]) {
