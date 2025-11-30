@@ -1,1 +1,72 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#define PROTOPORT 5193
+#define BUFFER_SIZE 1024
+
+//struct for join requests
+struct join_t {
+	char room_name[64];
+	char username[64];
+};
+
+int main(int argc, char *argv[]) {
+	int client_s; //client socket
+	struct sockaddr_in saddr;
+	struct join_t join;
+	char sip[16] = "127.0.0.1"; //ip for testing
+
+	//sets user input username
+	printf("Enter username: ");
+	fgets(join.username, sizeof(join.username), stdin);
+	join.username[strcspn(join.username, "\n")] = 0;
+
+	//takes user input chat room name
+	printf("Enter room name: ");
+	fgets(join.room_name, sizeof(join.room_name), stdin);
+	join.room_name[strcspn(join.room_name, "\n")] = 0;
+	
+	//creates client socket
+	client_s = socket(AF_INET, SOCK_STREAM, 0);
+	if (client_s < 0) {
+		perror("CLIENT: Socket creation failed.\n");
+		exit(1);
+	}
+
+	memset(&saddr, 0, sizeof(saddr));
+	saddr.sin_family = AF_INET;
+	saddr.sin_port = htons(PROTOPORT);
+
+	//checks network address
+	if (inet_pton(AF_INET, sip, &saddr.sin_addr) <= 0) {
+		perror("CLIENT: Invalid address.\n");
+		exit(1);
+	}
+
+	//connects to server join port
+	if (connect(client_s, (struct sockaddr*)&saddr, sizeof(saddr)) < 0) {
+		perror("CLIENT: Connection failed.\n");
+		exit(1);
+	}
+
+	printf("CLIENT: Connected to server.\n");
+
+	//sends join request to server
+	if (send(client_s, &join, sizeof(join), 0) < 0) {
+		perror("CLIENT: Send failed.\n");
+		exit(1);
+	}
+
+	printf("CLIENT: Join request sent for room: %s.\n", join.room_name);
+
+	//closes client socket
+	close(client_s);
+	return 0;
+}
 
