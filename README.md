@@ -1,14 +1,13 @@
 # serverToClient
 ReadMe for current code
 
-Will be updated as features are completed
-
 Function parameters/output details to be added to aid in drafting report
 ## Files
 chatserver.c
 
 chatclient.c
 ## Description
+This a multi-threaded chatroom used in Linux for commmunication between a server and a client.
 ### Environment
 Written in C for Linux Command Line
 ### Procedure
@@ -21,6 +20,8 @@ Written in C for Linux Command Line
 - Connected clients receive and send messages to all other occupants through socket
 - Maximum number of rooms is 20
 - Maximum number of clients per room is 10
+- Clients can leave via "/leave" and confirming the request
+- UDP broadcasts are sent in the discoverServer function.
 ## Contributors
 Melissa Swindall
 
