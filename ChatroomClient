@@ -78,7 +78,7 @@ int discoverServer(char* server_ip) {
 	//creates UDP socket
 	sock = socket(AF_INET, SOCK_DGRAM, 0);
 	if (sock < 0) {
-		perror("UDP socket creation failed.\n");
+		perror("CLIENT: UDP socket creation failed.\n");
 		return -1;
 	}
 
@@ -93,7 +93,7 @@ int discoverServer(char* server_ip) {
 	//sends UDP broadcast
 	strcpy(buffer, "DISCOVER");
 	if (sendto(sock, buffer, strlen(buffer), 0, (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr)) < 0) {
-		perror("UDP broadcast failed");
+		perror("CLIENT: UDP broadcast failed.\n");
 		close(sock);
 		return -1;
 	}
@@ -107,7 +107,7 @@ int discoverServer(char* server_ip) {
 	//receives response from server
 	int num_recv = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&recv_addr, &addr_len);
 	if (num_recv < 0) {
-		perror("No server response");
+		perror("CLIENT: No server response.\n");
 		close(sock);
 		return -1;
 	}
