@@ -11,6 +11,7 @@
 #define PROTOPORT 5193
 #define PEND_CONNECTIONS 20
 #define BUFFER_SIZE 1024
+#define DISCOVERY_PORT 6000
 #define MAX_ROOMS 20
 #define MAX_CLIENTS_PER_ROOM 10
 #define MAX_NAME_SIZE 64
@@ -172,7 +173,6 @@ void removeClient(struct chatroom_t* room, int client_socket) {
 
 
 //broadcasts messages to all occupants of chat room
-//TEST REMOVING SENDER FROM SEND LIST
 void broadcast(struct chatroom_t* room, const char* msg, int sender) {
 	pthread_mutex_lock(&room->lock);
 
@@ -388,6 +388,59 @@ void* roomHandler(void *arg) {
 
 
 
+//handles UDP discovery
+void* discHandler(void* arg) {
+	int disc_socket;
+	struct sockaddr_in server_addr, client_addr;
+	char buffer[BUFFER_SIZE];
+	socklen_t addr_len = sizeof(client_addr);
+
+	//creates UDP socket
+	disc_socket = socket(AF_INET, SOCK_DGRAM, 0);
+	if (disc_socket < 0) {
+		perror("SERVER: Discovery socket creation failed.\n");
+		pthread_exit(0);
+	}
+
+	memset(&server_addr, 0, sizeof(server_addr));
+	server_addr.sin_family = AF_INET;
+	server_addr.sin_addr.s_addr = INADDR_ANY;
+	server_addr.sin_port = htons(DISCOVERY_PORT);
+
+	//binds socket to discovery port
+	if (bind(disc_socket, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+		perror("SERVER: Discovery bind failed.\n");
+		close(disc_socket);
+		pthread_exit(0);
+	}
+
+	printf("SERVER: Listening on discovery port...\n");
+
+	//loop to receive discovery messages
+	while (1) {
+		//receives from messages discovery port
+		int num_recv = recvfrom(disc_socket, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&client_addr, &addr_len);
+		if (num_recv <= 0) {
+			continue;
+		}
+
+		buffer[num_recv] = '\0';
+
+		//sends discovery response
+		if (strcmp(buffer, "DISCOVER") == 0) {
+			char response[16];
+			//sends join port to client
+			snprintf(response, sizeof(response), "%d", PROTOPORT);
+			sendto(disc_socket, response, strlen(response), 0, (struct sockaddr*)&client_addr, addr_len);
+		}
+	}
+
+	//closes discovery socket
+	close(disc_socket);
+	pthread_exit(0);
+}
+
+
 int main(void) {
 	int server_s, client_s;				//server and client sockets
 	struct sockaddr_in saddr, caddr;	//socket addresses
@@ -425,6 +478,11 @@ int main(void) {
 
 	//displays initial server message
 	printf("SERVER: Listening on join port...\n");
+
+	//creates thread for UDP discovery
+	pthread_t disc_thread;
+	pthread_create(&disc_thread, NULL, discHandler, NULL);
+	pthread_detach(disc_thread);
 
 	//main loop
 	while (1) {
