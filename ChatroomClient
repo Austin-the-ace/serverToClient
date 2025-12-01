@@ -11,9 +11,12 @@
 #define PROTOPORT 5193
 #define BUFFER_SIZE 1024
 #define MAX_NAME_SIZE 64
+#define LEAVE_REQUEST "<LEAVE>"
+#define LEAVE_CONFIRMED "<CONFIRMED>"
 
 int roomsocket;
 int running = 1;
+int allow_prompt = 0;
 
 //struct for join requests
 struct join_t {
@@ -26,6 +29,7 @@ struct join_t {
 //function to receive messages from chat room
 void* receiveMsg(void* arg) {
 	char message[BUFFER_SIZE];
+	char* username = (char*)arg;
 
 	while (running) {
 		memset(message, 0, sizeof(message));
@@ -39,10 +43,23 @@ void* receiveMsg(void* arg) {
 			break;
 		}
 
-		//displays received message
 		message[num_recv] = '\0';
-		printf("%s", message);
-		fflush(stdout);
+
+		//checks for leave confirmation
+		if (strcmp(message, LEAVE_CONFIRMED) == 0) {
+			printf("\nCLIENT: Leave successful.\n");
+			running = 0;
+			break;
+		}
+
+		//displays received message
+		printf("\r%s", message);
+
+		if (allow_prompt) {
+			//displays prompt for further user input
+			printf("%s: ", username);
+			fflush(stdout);
+		}
 	}
 
 	pthread_exit(0);
@@ -145,16 +162,59 @@ int main(int argc, char *argv[]) {
 
 	//creates thread to receive messages
 	pthread_t recv_thread;
-	pthread_create(&recv_thread, NULL, receiveMsg, NULL);
+	pthread_create(&recv_thread, NULL, receiveMsg, join_req.username);
 	pthread_detach(recv_thread);
+
+	//waits for initial message from server
+	sleep(1);
+
+	printf("CLIENT: You may begin chatting - Use /leave to exit.\n");
+	allow_prompt = 1;
 
 	char message[BUFFER_SIZE];
 
 	//loop for sending messages
 	while (running) {
+		//displays username for client
+		printf("%s: ", join_req.username);
+		fflush(stdout);
+
 		//takes user input message
 		if (fgets(message, sizeof(message), stdin) != NULL) {
 			message[strcspn(message, "\n")] = 0;
+
+			//if the input message matches leave command, a leave request is sent
+			if (strcmp(message, "/leave") == 0) {
+
+				//confirms leave request
+				printf("CLIENT: Leave room %s? (y/n) ", join_req.room_name);
+				char confirm[10];
+				fgets(confirm, sizeof(confirm), stdin);
+
+				//leave request confirmed
+				if (confirm[0] == 'y' || confirm[0] == 'Y') {
+					//notify client of sent request
+					printf("CLIENT: Sending leave request...");
+
+					//sends leave request to room
+					send(roomsocket, LEAVE_REQUEST, strlen(LEAVE_REQUEST), 0);
+
+					//waits for server confirmation
+					sleep(1);
+
+					//ends messaging loop
+					running = 0;
+					break;
+				}
+
+				//if the leave request is denied, chatting continues
+				else {
+					//continues
+					printf("CLIENT: Leave cancelled.\n");
+					continue;
+				}
+
+			}
 
 			if (strlen(message) > 0) {
 				//sends message to room
@@ -170,7 +230,8 @@ int main(int argc, char *argv[]) {
 	} //end send loop
 
 
-	//closes client socket
+	//closes room socket
 	close(roomsocket);
+	printf("CLIENT: Disconnected from server.\n");
 	return 0;
 }
