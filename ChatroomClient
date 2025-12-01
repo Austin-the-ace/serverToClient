@@ -13,6 +13,8 @@
 #define MAX_NAME_SIZE 64
 #define LEAVE_REQUEST "<LEAVE>"
 #define LEAVE_CONFIRMED "<CONFIRMED>"
+#define DISCOVERY_PORT 6000
+#define DISCOVERY_TIMEOUT 3
 
 int roomsocket;
 int running = 1;
@@ -66,11 +68,76 @@ void* receiveMsg(void* arg) {
 }
 
 
+//uses UDP broadcast to discover server
+int discoverServer(char* server_ip) {
+	int sock;
+	struct sockaddr_in broadcast_addr, recv_addr;
+	socklen_t addr_len = sizeof(recv_addr);
+	char buffer[BUFFER_SIZE];
+
+	//creates UDP socket
+	sock = socket(AF_INET, SOCK_DGRAM, 0);
+	if (sock < 0) {
+		perror("UDP socket creation failed.\n");
+		return -1;
+	}
+
+	int opt = 1;
+	setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &opt, sizeof(opt));
+
+	memset(&broadcast_addr, 0, sizeof(broadcast_addr));
+	broadcast_addr.sin_family = AF_INET;
+	broadcast_addr.sin_port = htons(DISCOVERY_PORT);
+	broadcast_addr.sin_addr.s_addr = inet_addr("255.255.255.255");
+
+	//sends UDP broadcast
+	strcpy(buffer, "DISCOVER");
+	if (sendto(sock, buffer, strlen(buffer), 0, (struct sockaddr*)&broadcast_addr, sizeof(broadcast_addr)) < 0) {
+		perror("UDP broadcast failed");
+		close(sock);
+		return -1;
+	}
+
+	//sets timeout value
+	struct timeval timeout;
+	timeout.tv_sec = DISCOVERY_TIMEOUT;
+	timeout.tv_usec = 0;
+	setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+
+	//receives response from server
+	int num_recv = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, (struct sockaddr*)&recv_addr, &addr_len);
+	if (num_recv < 0) {
+		perror("No server response");
+		close(sock);
+		return -1;
+	}
+
+	buffer[num_recv] = '\0';
+	//copies server IP from UDP reply
+	strcpy(server_ip, inet_ntoa(recv_addr.sin_addr));
+	close(sock);
+
+	//returns join port
+	return atoi(buffer);
+}
+
+
 int main(int argc, char *argv[]) {
 	int joinsocket; //client socket
 	struct sockaddr_in joinaddr, roomaddr;
 	struct join_t join_req;
-	char sip[16] = "127.0.0.1"; //local host ip for testing
+
+	//invokes function to discover server using UDP broadcast
+	char sip[16];
+	int server_port = discoverServer(sip);
+
+	//if function returns -1, server was not found
+	if (server_port <= 0) {
+		printf("CLIENT: Unable to discover server.\n");
+		exit(1);
+	}
+
+	printf("CLIENT: Server discovered.\n");
 
 	//sets user input username
 	printf("CLIENT: Enter username: ");
@@ -81,7 +148,7 @@ int main(int argc, char *argv[]) {
 	printf("CLIENT: Enter room name: ");
 	fgets(join_req.room_name, sizeof(join_req.room_name), stdin);
 	join_req.room_name[strcspn(join_req.room_name, "\n")] = 0;
-	
+
 	//creates client socket
 	joinsocket = socket(AF_INET, SOCK_STREAM, 0);
 	if (joinsocket < 0) {
