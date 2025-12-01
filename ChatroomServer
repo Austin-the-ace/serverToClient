@@ -14,6 +14,8 @@
 #define MAX_ROOMS 20
 #define MAX_CLIENTS_PER_ROOM 10
 #define MAX_NAME_SIZE 64
+#define LEAVE_REQUEST "<LEAVE>"
+#define LEAVE_CONFIRMED "<CONFIRMED>"
 
 
 //struct for threads
@@ -45,6 +47,8 @@ struct chatroom_t {
 	int port;
 	struct clientinfo_t clients[MAX_CLIENTS_PER_ROOM];
 	int client_count;
+	int socket;
+	int is_active;
 	pthread_mutex_t lock; //lock for individual rooms
 };
 
@@ -72,7 +76,7 @@ struct chatroom_t* findRoom(const char* roomname) {
 
 	//searches for room
 	for (int i = 0; i < room_count; i++) {
-		if (strcmp(rooms[i].name, roomname) == 0) {
+		if (strcmp(rooms[i].name, roomname) == 0 && rooms[i].is_active) {
 			pthread_mutex_unlock(&rooms_lock);
 			printf("SERVER: Found room %s.\n", roomname);
 			return &rooms[i];
@@ -102,6 +106,10 @@ struct chatroom_t* createRoom(const char* roomname) {
 	strncpy(room->name, roomname, sizeof(room->name) - 1);
 	room->port = next_port++;
 	room->client_count = 0;
+	room->socket = -1;
+	room->is_active = 1;
+	pthread_mutex_init(&room->lock, NULL);
+
 	pthread_mutex_unlock(&rooms_lock);
 
 	printf("SERVER: Created new room %s on port %d.\n", roomname, room->port);
@@ -168,9 +176,11 @@ void removeClient(struct chatroom_t* room, int client_socket) {
 void broadcast(struct chatroom_t* room, const char* msg, int sender) {
 	pthread_mutex_lock(&room->lock);
 
-	//sends message to all room occupants, including sender
+	//sends message to all room occupants, excluding sender
 	for (int i = 0; i < room->client_count; i++) {
-		send(room->clients[i].socket, msg, strlen(msg), 0);
+		if (room->clients[i].socket != sender) {
+			send(room->clients[i].socket, msg, strlen(msg), 0);
+		}
 	}
 
 	pthread_mutex_unlock(&room->lock);
@@ -178,8 +188,31 @@ void broadcast(struct chatroom_t* room, const char* msg, int sender) {
 
 
 
+//checks if room should be closed
+//closes empty rooms
+void checkRoom(struct chatroom_t* room) {
+	pthread_mutex_lock(&room->lock);
+
+	//checks if room is empty
+	if ((room->client_count) == 0 && room->is_active) {
+		printf("SERVER: Room %s is empty - closing room...\n", room->name);
+
+		//updates room active status
+		room->is_active = 0;
+
+		//closes room socket
+		if (room->socket > 0) {
+			close(room->socket);
+			room->socket = -1;
+		}
+	}
+
+	pthread_mutex_unlock(&room->lock);
+}
+
+
 //handles messaging and individual clients in room
-void* chatHandler(void* arg) {
+void* clientHandler(void* arg) {
 	struct chatroom_t* room = (struct chatroom_t*)arg;
 	int client_socket = room->clients[room->client_count - 1].socket;
 	char username[MAX_NAME_SIZE];
@@ -189,7 +222,7 @@ void* chatHandler(void* arg) {
 	char format_msg[BUFFER_SIZE + MAX_NAME_SIZE + 10];
 
 	//sends confirmation to individual client
-	snprintf(buffer, sizeof(buffer), "SERVER: Joined room %s successfully.\n", room->name);
+	snprintf(buffer, sizeof(buffer), "SERVER: Joined room %s successfully (%d/%d)\n", room->name, room->client_count, MAX_CLIENTS_PER_ROOM);
 	send(client_socket, buffer, strlen(buffer), 0);
 
 	//broadcasts occupancy update to clients in room
@@ -201,19 +234,44 @@ void* chatHandler(void* arg) {
 		memset(buffer, 0, sizeof(buffer));
 		int num_recv = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
 
-		//processes client disconnection
+		//processes client disconnection without leave request
 		if (num_recv <= 0) {
 			printf("SERVER: User %s disconnected from room %s.\n", username, room->name);
 
 			snprintf(format_msg, sizeof(format_msg), "SERVER: User %s has left %s (%d/%d)\n", username, room->name, room->client_count, MAX_CLIENTS_PER_ROOM);
 			broadcast(room, format_msg, client_socket);
 
+			//removes client from room
 			removeClient(room, client_socket);
 			close(client_socket);
+
+			//checks if room should be closed, closes if empty
+			checkRoom(room);
 			break;
 		}
 
 		buffer[num_recv] = '\0';
+
+		//if leave request is received, removes client and broadcasts to room
+		if (strcmp(buffer, LEAVE_REQUEST) == 0) {
+			printf("SERVER: Leave request received for user %s from room %s.\n", username, room->name);
+
+			//sends leave confirmation to client
+			send(client_socket, LEAVE_CONFIRMED, strlen(LEAVE_CONFIRMED), 0);
+
+			//broadcasts departure to room occupants
+			snprintf(format_msg, sizeof(format_msg), "SERVER: User %s has left %s (%d/%d)\n", username, room->name, room->client_count - 1, MAX_CLIENTS_PER_ROOM);
+			broadcast(room, format_msg, client_socket);
+
+			//removes client from room
+			removeClient(room, client_socket);
+			close(client_socket);
+
+			//checks if room should be closed, closes if empty
+			checkRoom(room);
+			break;
+		}
+
 		buffer[strcspn(buffer, "\n")];
 
 		//sends formatted messages to room occupants using broadcast function
@@ -264,6 +322,11 @@ void* roomHandler(void *arg) {
 		pthread_exit(0);
 	}
 
+	//stores room socket information
+	pthread_mutex_lock(&room->lock);
+	room->socket = roomsocket;
+	pthread_mutex_unlock(&room->lock);
+
 	printf("SERVER: Room %s listening on port %d...\n", room->name, room->port);
 
 	//room loop to accept clients
@@ -275,6 +338,17 @@ void* roomHandler(void *arg) {
 		int client_s = accept(roomsocket, (struct sockaddr*)&client_addr, &addrlen);
 
 		if (client_s < 0) {
+			//checks if room was closed
+			pthread_mutex_lock(&room->lock);
+			int active = room->is_active;
+			pthread_mutex_unlock(&room->lock);
+
+			//if the room is not active, the room is closed
+			if (!active) {
+				printf("SERVER: Room %s closed - exiting worker thread...\n", room->name);
+				break;
+			}
+
 			perror("SERVER: Room accept failed.\n");
 			continue;
 		}
@@ -290,10 +364,10 @@ void* roomHandler(void *arg) {
 		username[num_recv] = '\0';
 
 		//invokes function to add client to room
-		int isFull = addClient(room, client_s, username);
+		int is_full = addClient(room, client_s, username);
 
 		//checks if room is full
-		if (isFull < 0) {
+		if (is_full < 0) {
 			char* msg = "SERVER: Room is full.\n";
 			//notifies client
 			send(client_s, msg, strlen(msg), 0);
@@ -303,7 +377,7 @@ void* roomHandler(void *arg) {
 
 		//creates chat thread for client
 		pthread_t client_thread;
-		pthread_create(&client_thread, NULL, chatHandler, (void*)room);
+		pthread_create(&client_thread, NULL, clientHandler, (void*)room);
 		pthread_detach(client_thread);
 	}
 
@@ -349,7 +423,7 @@ int main(void) {
 		exit(1);
 	}
 
-	//displays server initial message
+	//displays initial server message
 	printf("SERVER: Listening on join port...\n");
 
 	//main loop
@@ -385,6 +459,7 @@ int main(void) {
 			send(client_s, response, strlen(response), 0);
 
 			close(client_s);
+			continue;
 		}
 
 		//if room isn't found, creates new worker thread
@@ -407,7 +482,7 @@ int main(void) {
 			pthread_detach(worker_threads[room_count - 1]);
 
 			//sleeps to allow worker thread time for set up
-			usleep(1000000);
+			usleep(100000);
 		}
 
 		//after new room is created, port is sent to client
