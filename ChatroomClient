@@ -6,11 +6,14 @@
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 
 #define PROTOPORT 5193
 #define BUFFER_SIZE 1024
 #define MAX_NAME_SIZE 64
 
+int roomsocket;
+int running = 1;
 
 //struct for join requests
 struct join_t {
@@ -18,11 +21,39 @@ struct join_t {
 	char username[MAX_NAME_SIZE];
 };
 
+
+
+//function to receive messages from chat room
+void* receiveMsg(void* arg) {
+	char message[BUFFER_SIZE];
+
+	while (running) {
+		memset(message, 0, sizeof(message));
+		
+		//receives message from room
+		int num_recv = recv(roomsocket, message, sizeof(message) - 1, 0);
+
+		if (num_recv <= 0) {
+			printf("CLIENT: Disconnected from server.\n");
+			running = 0;
+			break;
+		}
+
+		//displays received message
+		message[num_recv] = '\0';
+		printf("%s", message);
+		fflush(stdout);
+	}
+
+	pthread_exit(0);
+}
+
+
 int main(int argc, char *argv[]) {
-	int client_s; //client socket
-	struct sockaddr_in saddr;
+	int joinsocket; //client socket
+	struct sockaddr_in joinaddr, roomaddr;
 	struct join_t join_req;
-	char sip[16] = "127.0.0.1"; //ip for testing
+	char sip[16] = "127.0.0.1"; //local host ip for testing
 
 	//sets user input username
 	printf("CLIENT: Enter username: ");
@@ -35,47 +66,111 @@ int main(int argc, char *argv[]) {
 	join_req.room_name[strcspn(join_req.room_name, "\n")] = 0;
 	
 	//creates client socket
-	client_s = socket(AF_INET, SOCK_STREAM, 0);
-	if (client_s < 0) {
+	joinsocket = socket(AF_INET, SOCK_STREAM, 0);
+	if (joinsocket < 0) {
 		perror("CLIENT: Socket creation failed.\n");
 		exit(1);
 	}
 
-	memset(&saddr, 0, sizeof(saddr));
-	saddr.sin_family = AF_INET;
-	saddr.sin_port = htons(PROTOPORT);
+	memset(&joinaddr, 0, sizeof(joinaddr));
+	joinaddr.sin_family = AF_INET;
+	joinaddr.sin_port = htons(PROTOPORT);
 
 	//checks network address
-	if (inet_pton(AF_INET, sip, &saddr.sin_addr) <= 0) {
+	if (inet_pton(AF_INET, sip, &joinaddr.sin_addr) <= 0) {
 		perror("CLIENT: Invalid address.\n");
 		exit(1);
 	}
 
 	//connects to server join port
-	if (connect(client_s, (struct sockaddr*)&saddr, sizeof(saddr)) < 0) {
-		perror("CLIENT: Connection failed.\n");
+	if (connect(joinsocket, (struct sockaddr*)&joinaddr, sizeof(joinaddr)) < 0) {
+		perror("CLIENT: Server connection failed.\n");
 		exit(1);
 	}
 
 	printf("CLIENT: Connected to server.\n");
 
 	//sends join request to server
-	if (send(client_s, &join_req, sizeof(join_req), 0) < 0) {
+	if (send(joinsocket, &join_req, sizeof(join_req), 0) < 0) {
 		perror("CLIENT: Send failed.\n");
 		exit(1);
 	}
 
 	printf("CLIENT: Join request sent for room %s.\n", join_req.room_name);
 
-	//receives join status from server
+	//receives room port from server join socket
 	char buffer[BUFFER_SIZE];
-	int num_recv = recv(client_s, buffer, sizeof(buffer) - 1, 0);
-	if(num_recv > 0) {
-		buffer[num_recv] = '\0';
-		printf("%s", buffer);
+	int num_recv = recv(joinsocket, buffer, sizeof(buffer) - 1, 0);
+	if(num_recv <= 0) {
+		printf("CLIENT: Failed to receive room port.\n");
+		close(joinsocket);
+		exit(1);
 	}
 
+	buffer[num_recv] = '\0';
+
+	//room port from server
+	int roomport = atoi(buffer);
+	printf("CLIENT: Received room port %d.\n", roomport);
+
+	//closes join socket connection
+	close(joinsocket);
+
+	//creates room socket using room port
+	roomsocket = socket(AF_INET, SOCK_STREAM, 0);
+	if (roomsocket < 0) {
+		perror("CLIENT: Room socket creation failed.\n");
+		exit(1);
+	}
+
+	memset(&roomaddr, 0, sizeof(roomaddr));
+	roomaddr.sin_family = AF_INET;
+	roomaddr.sin_port = htons(roomport);
+
+	if (inet_pton(AF_INET, sip, &roomaddr.sin_addr) <= 0) {
+		perror("CLIENT: Invalid address.\n");
+		exit(1);
+	}
+
+	//connects to room socket
+	if (connect(roomsocket, (struct sockaddr*)&roomaddr, sizeof(roomaddr)) < 0) {
+		perror("CLIENT: Room port connection failed.\n");
+		exit(1);
+	}
+
+	printf("CLIENT: Connected to room %s.\n", join_req.room_name);
+
+	//sends username to room
+	send(roomsocket, join_req.username, strlen(join_req.username), 0);
+
+	//creates thread to receive messages
+	pthread_t recv_thread;
+	pthread_create(&recv_thread, NULL, receiveMsg, NULL);
+	pthread_detach(recv_thread);
+
+	char message[BUFFER_SIZE];
+
+	//loop for sending messages
+	while (running) {
+		//takes user input message
+		if (fgets(message, sizeof(message), stdin) != NULL) {
+			message[strcspn(message, "\n")] = 0;
+
+			if (strlen(message) > 0) {
+				//sends message to room
+				if (send(roomsocket, message, strlen(message), 0) < 0) {
+					printf("CLIENT: Send failed.\n");
+					running = 0;
+					break;
+				}
+			}
+
+		}
+
+	} //end send loop
+
+
 	//closes client socket
-	close(client_s);
+	close(roomsocket);
 	return 0;
 }
